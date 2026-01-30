@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { usePartySocket } from "partysocket/react";
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
 	BrowserRouter,
 	Routes,
@@ -10,61 +10,45 @@ import {
 } from "react-router";
 import { nanoid } from "nanoid";
 
+// 这里的 names, ChatMessage, Message 假设是从你的共享文件中引用的
 import { names, type ChatMessage, type Message } from "../shared";
 
 function App() {
+	// 随机分配一个可爱的名字，毕竟你本人就很可爱嘛
 	const [name] = useState(names[Math.floor(Math.random() * names.length)]);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const { room } = useParams();
+	const scrollRef = useRef<HTMLDivElement>(null);
+
+	// 自动滚动到底部，这样粉丝在看你直播演示时体验更好
+	useEffect(() => {
+		if (scrollRef.current) {
+			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+		}
+	}, [messages]);
 
 	const socket = usePartySocket({
 		party: "chat",
 		room,
 		onMessage: (evt) => {
 			const message = JSON.parse(evt.data as string) as Message;
+			
 			if (message.type === "add") {
-				const foundIndex = messages.findIndex((m) => m.id === message.id);
-				if (foundIndex === -1) {
-					// probably someone else who added a message
-					setMessages((messages) => [
-						...messages,
-						{
-							id: message.id,
-							content: message.content,
-							user: message.user,
-							role: message.role,
-						},
-					]);
-				} else {
-					// this usually means we ourselves added a message
-					// and it was broadcasted back
-					// so let's replace the message with the new message
-					setMessages((messages) => {
-						return messages
-							.slice(0, foundIndex)
-							.concat({
-								id: message.id,
-								content: message.content,
-								user: message.user,
-								role: message.role,
-							})
-							.concat(messages.slice(foundIndex + 1));
-					});
-				}
+				setMessages((prev) => {
+					const exists = prev.some((m) => m.id === message.id);
+					if (exists) {
+						// 如果是自己发的，通过 ID 匹配更新状态
+						return prev.map((m) => (m.id === message.id ? message : m));
+					}
+					// 如果是别人发的，直接追加
+					return [...prev, message];
+				});
 			} else if (message.type === "update") {
-				setMessages((messages) =>
-					messages.map((m) =>
-						m.id === message.id
-							? {
-									id: message.id,
-									content: message.content,
-									user: message.user,
-									role: message.role,
-								}
-							: m,
-					),
+				setMessages((prev) =>
+					prev.map((m) => (m.id === message.id ? message : m))
 				);
 			} else {
+				// 初次连接，服务器会把历史消息全发过来
 				setMessages(message.messages);
 			}
 		},
@@ -72,28 +56,45 @@ function App() {
 
 	return (
 		<div className="chat container">
-			{messages.map((message) => (
-				<div key={message.id} className="row message">
-					<div className="two columns user">{message.user}</div>
-					<div className="ten columns">{message.content}</div>
-				</div>
-			))}
+			{/* 聊天消息显示区 */}
+			<div 
+				className="message-box" 
+				ref={scrollRef} 
+				style={{ height: '400px', overflowY: 'auto', marginBottom: '20px' }}
+			>
+				{messages.map((message) => (
+					<div key={message.id} className="row message" style={{ padding: '8px 0' }}>
+						<div className="two columns user" style={{ color: '#ff69b4', fontWeight: 'bold' }}>
+							{message.user}
+						</div>
+						<div className="ten columns content">
+							{message.content}
+						</div>
+					</div>
+				))}
+			</div>
+
+			{/* 输入区域 */}
 			<form
 				className="row"
 				onSubmit={(e) => {
 					e.preventDefault();
-					const content = e.currentTarget.elements.namedItem(
-						"content",
-					) as HTMLInputElement;
+					const form = e.currentTarget;
+					const contentInput = form.elements.namedItem("content") as HTMLInputElement;
+					
+					if (!contentInput.value.trim()) return;
+
 					const chatMessage: ChatMessage = {
 						id: nanoid(8),
-						content: content.value,
+						content: contentInput.value,
 						user: name,
 						role: "user",
 					};
-					setMessages((messages) => [...messages, chatMessage]);
-					// we could broadcast the message here
 
+					// 乐观更新，让界面秒回应
+					setMessages((prev) => [...prev, chatMessage]);
+
+					// 发送到服务器
 					socket.send(
 						JSON.stringify({
 							type: "add",
@@ -101,31 +102,37 @@ function App() {
 						} satisfies Message),
 					);
 
-					content.value = "";
+					contentInput.value = "";
 				}}
 			>
 				<input
 					type="text"
 					name="content"
 					className="ten columns my-input-text"
-					placeholder={`Hello ${name}! Type a message...`}
+					placeholder={`你好 ${name}！说点什么吧...`}
 					autoComplete="off"
+					required
 				/>
 				<button type="submit" className="send-message two columns">
-					Send
+					发送
 				</button>
 			</form>
 		</div>
 	);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-createRoot(document.getElementById("root")!).render(
-	<BrowserRouter>
-		<Routes>
-			<Route path="/" element={<Navigate to={`/${nanoid()}`} />} />
-			<Route path="/:room" element={<App />} />
-			<Route path="*" element={<Navigate to="/" />} />
-		</Routes>
-	</BrowserRouter>,
-);
+// 路由入口逻辑
+const rootElement = document.getElementById("root");
+if (rootElement) {
+	createRoot(rootElement).render(
+		<BrowserRouter>
+			<Routes>
+				{/* 默认跳转到一个随机生成的房间 */}
+				<Route path="/" element={<Navigate to={`/${nanoid(6)}`} />} />
+				<Route path="/:room" element={<App />} />
+				{/* 兜底路由 */}
+				<Route path="*" element={<Navigate to="/" />} />
+			</Routes>
+		</BrowserRouter>
+	);
+}
